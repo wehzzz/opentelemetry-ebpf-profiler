@@ -191,11 +191,11 @@ func trimMappingPath(path string) string {
 
 func parseMappings(mapsFile io.Reader) ([]Mapping, uint32, error) {
 	numParseErrors := uint32(0)
-	mappings := make([]Mapping, 0, 32)
+	allMappings := make([]Mapping, 0, 32)
 	scanner := bufio.NewScanner(mapsFile)
 	scanBuf := bufPool.Get().(*[]byte)
 	if scanBuf == nil {
-		return mappings, 0, errors.New("failed to get memory from sync pool")
+		return allMappings, 0, errors.New("failed to get memory from sync pool")
 	}
 	defer func() {
 		// Reset memory and return it for reuse.
@@ -304,7 +304,7 @@ func parseMappings(mapsFile io.Reader) ([]Mapping, uint32, error) {
 			continue
 		}
 
-		mappings = append(mappings, Mapping{
+		allMappings = append(allMappings, Mapping{
 			Vaddr:      vaddr,
 			Length:     length,
 			Flags:      flags,
@@ -313,6 +313,24 @@ func parseMappings(mapsFile io.Reader) ([]Mapping, uint32, error) {
 			Inode:      inode,
 			Path:       path,
 		})
+	}
+
+	executableFiles := make(map[libpf.String]struct{})
+	for i := range allMappings {
+		if allMappings[i].Flags&elf.PF_X != 0 && allMappings[i].Path != libpf.NullString {
+			executableFiles[allMappings[i].Path] = struct{}{}
+		}
+	}
+
+	mappings := allMappings[:0]
+	for _, m := range allMappings {
+		if m.Path == libpf.NullString {
+			mappings = append(mappings, m)
+			continue
+		}
+		if _, ok := executableFiles[m.Path]; ok {
+			mappings = append(mappings, m)
+		}
 	}
 	return mappings, numParseErrors, scanner.Err()
 }
