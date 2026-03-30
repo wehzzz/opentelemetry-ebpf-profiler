@@ -393,6 +393,11 @@ static EBPF_INLINE ErrorCode unwind_one_frame(UnwindState *state, bool *stop)
         *stop = true;
         return ERR_OK;
       }
+      if (!go_offs->sched_sp || !go_offs->sched_pc) {
+        DEBUG_PRINT("GOSTACK: sched offsets not configured, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
       void *m_ptr = get_m_ptr(go_offs, state);
       if (!m_ptr) {
         DEBUG_PRINT("GOSTACK: failed to get m_ptr, stopping");
@@ -423,6 +428,14 @@ static EBPF_INLINE ErrorCode unwind_one_frame(UnwindState *state, bool *stop)
       }
       if (bpf_probe_read_user(&sched_bp, sizeof(sched_bp), (void *)(curg + go_offs->sched_bp))) {
         DEBUG_PRINT("GOSTACK: failed to read sched_bp, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (!sched_sp || !sched_pc) {
+        DEBUG_PRINT(
+          "GOSTACK: gobuf not populated (sp=0x%lx, pc=0x%lx), stopping",
+          (unsigned long)sched_sp,
+          (unsigned long)sched_pc);
         *stop = true;
         return ERR_OK;
       }
@@ -544,6 +557,11 @@ static EBPF_INLINE ErrorCode unwind_one_frame(struct UnwindState *state, bool *s
         *stop = true;
         return ERR_OK;
       }
+      if (!go_offs->sched_sp || !go_offs->sched_pc) {
+        DEBUG_PRINT("GOSTACK: sched offsets not configured, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
       void *m_ptr = get_m_ptr(go_offs, state);
       if (!m_ptr) {
         DEBUG_PRINT("GOSTACK: failed to get m_ptr, stopping");
@@ -577,6 +595,14 @@ static EBPF_INLINE ErrorCode unwind_one_frame(struct UnwindState *state, bool *s
         *stop = true;
         return ERR_OK;
       }
+      if (!sched_sp || !sched_pc) {
+        DEBUG_PRINT(
+          "GOSTACK: gobuf not populated (sp=0x%lx, pc=0x%lx), stopping",
+          (unsigned long)sched_sp,
+          (unsigned long)sched_pc);
+        *stop = true;
+        return ERR_OK;
+      }
       DEBUG_PRINT(
         "GOSTACK: recovered saved context: sp=0x%lx, pc=0x%lx, fp=0x%lx",
         (unsigned long)sched_sp,
@@ -585,6 +611,7 @@ static EBPF_INLINE ErrorCode unwind_one_frame(struct UnwindState *state, bool *s
       state->sp  = sched_sp;
       state->pc  = normalize_pac_ptr(sched_pc);
       state->fp  = sched_bp;
+      state->lr  = 0;
       // Update r28 (the g register on aarch64) to point to curg so that
       // subsequent get_m_ptr calls use the correct goroutine pointer.
       state->r28 = curg;

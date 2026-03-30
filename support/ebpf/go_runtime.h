@@ -13,8 +13,11 @@
 //
 // On aarch64, when tls_offset is 0 (non-CGO binaries), the G pointer is taken
 // from the r28 register saved in the unwind state instead of TLS.
-static EBPF_INLINE void *get_m_ptr(struct GoLabelsOffsets *offs, UNUSED UnwindState *state)
+static EBPF_INLINE void *get_m_ptr(struct GoLabelsOffsets *offs, UnwindState *state)
 {
+#if defined(__x86_64__)
+  (void)state;
+#endif
   u64 g_addr     = 0;
   void *tls_base = NULL;
   if (tsd_get_base(&tls_base) < 0) {

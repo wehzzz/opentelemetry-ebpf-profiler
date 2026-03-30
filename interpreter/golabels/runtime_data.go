@@ -33,7 +33,7 @@ func getOffsets(vers string) support.GoLabelsOffsets {
 		// https://github.com/golang/go/blob/80e2e474b8d9124d03b744f/src/runtime/runtime2.go#L325
 		Sched_sp: 56,
 		Sched_pc: 64,
-		// gobuf.bp offset within gobuf is 48 (Go <= 1.24) or 40 (Go >= 1.25, gobuf.ret removed).
+		// Within gobuf: bp is at +48 (Go <= 1.24) or +40 (Go >= 1.25, gobuf.ret removed).
 		// Default: absolute offset = 56 + 48 = 104 for Go <= 1.24.
 		// https://github.com/golang/go/blob/339c903a75c3fe936fb4ed6c355d15e6081d6af3/src/runtime/runtime2.go#L317
 		Sched_bp: 104,

@@ -101,12 +101,6 @@ func getOffsets(f *elf.File, version string) (*goLabelsOffsets, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	r.Seek(mType.Offset)
-	_, err = r.Next()
-	if err != nil {
-		return nil, err
-	}
 	curgPType, curgOffset, err := ReadChildTypeAndOffset(r, "curg")
 	if err != nil {
 		return nil, err
