@@ -1,6 +1,9 @@
 #include "bpfdefs.h"
+#include "extmaps.h"
 #include "frametypes.h"
+#include "go_runtime.h"
 #include "tracemgmt.h"
+#include "tsd.h"
 #include "types.h"
 
 // with_debug_output is set during load time.
@@ -373,6 +376,67 @@ static EBPF_INLINE ErrorCode unwind_one_frame(UnwindState *state, bool *stop)
         goto err_native_pc_read;
       }
       goto frame_ok;
+    case UNWIND_COMMAND_GOSTACK: {
+      // Cross the Go stack-switch boundary: recover the goroutine's saved context
+      // from g.sched (set by runtime.systemstack or runtime.mcall when they
+      // switched from the goroutine stack to the g0 system stack).
+      PerCPURecord *cpu_record = get_per_cpu_record();
+      if (!cpu_record) {
+        DEBUG_PRINT("GOSTACK: no per-CPU record, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      u32 pid                  = cpu_record->trace.pid;
+      GoLabelsOffsets *go_offs = bpf_map_lookup_elem(&go_labels_procs, &pid);
+      if (!go_offs) {
+        DEBUG_PRINT("GOSTACK: no Go offsets for this process, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      void *m_ptr = get_m_ptr(go_offs, state);
+      if (!m_ptr) {
+        DEBUG_PRINT("GOSTACK: failed to get m_ptr, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      u64 curg = 0;
+      if (bpf_probe_read_user(&curg, sizeof(curg), (void *)((u64)m_ptr + go_offs->curg))) {
+        DEBUG_PRINT("GOSTACK: failed to read curg, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (!curg) {
+        DEBUG_PRINT("GOSTACK: no user goroutine (curg == NULL), stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      u64 sched_sp = 0, sched_pc = 0, sched_bp = 0;
+      if (bpf_probe_read_user(&sched_sp, sizeof(sched_sp), (void *)(curg + go_offs->sched_sp))) {
+        DEBUG_PRINT("GOSTACK: failed to read sched_sp, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (bpf_probe_read_user(&sched_pc, sizeof(sched_pc), (void *)(curg + go_offs->sched_pc))) {
+        DEBUG_PRINT("GOSTACK: failed to read sched_pc, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (bpf_probe_read_user(&sched_bp, sizeof(sched_bp), (void *)(curg + go_offs->sched_bp))) {
+        DEBUG_PRINT("GOSTACK: failed to read sched_bp, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      DEBUG_PRINT(
+        "GOSTACK: recovered saved context: sp=0x%lx, pc=0x%lx, fp=0x%lx",
+        (unsigned long)sched_sp,
+        (unsigned long)sched_pc,
+        (unsigned long)sched_bp);
+      state->sp = sched_sp;
+      state->pc = sched_pc;
+      state->fp = sched_bp;
+      unwinder_mark_nonleaf_frame(state);
+      goto frame_ok;
+    }
     default: return ERR_UNREACHABLE;
     }
   } else {
@@ -463,6 +527,70 @@ static EBPF_INLINE ErrorCode unwind_one_frame(struct UnwindState *state, bool *s
         goto err_native_pc_read;
       }
       goto frame_ok;
+    case UNWIND_COMMAND_GOSTACK: {
+      // Cross the Go stack-switch boundary: recover the goroutine's saved context
+      // from g.sched (set by runtime.systemstack or runtime.mcall when they
+      // switched from the goroutine stack to the g0 system stack).
+      PerCPURecord *cpu_record = get_per_cpu_record();
+      if (!cpu_record) {
+        DEBUG_PRINT("GOSTACK: no per-CPU record, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      u32 pid                  = cpu_record->trace.pid;
+      GoLabelsOffsets *go_offs = bpf_map_lookup_elem(&go_labels_procs, &pid);
+      if (!go_offs) {
+        DEBUG_PRINT("GOSTACK: no Go offsets for this process, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      void *m_ptr = get_m_ptr(go_offs, state);
+      if (!m_ptr) {
+        DEBUG_PRINT("GOSTACK: failed to get m_ptr, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      u64 curg = 0;
+      if (bpf_probe_read_user(&curg, sizeof(curg), (void *)((u64)m_ptr + go_offs->curg))) {
+        DEBUG_PRINT("GOSTACK: failed to read curg, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (!curg) {
+        DEBUG_PRINT("GOSTACK: no user goroutine (curg == NULL), stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      u64 sched_sp = 0, sched_pc = 0, sched_bp = 0;
+      if (bpf_probe_read_user(&sched_sp, sizeof(sched_sp), (void *)(curg + go_offs->sched_sp))) {
+        DEBUG_PRINT("GOSTACK: failed to read sched_sp, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (bpf_probe_read_user(&sched_pc, sizeof(sched_pc), (void *)(curg + go_offs->sched_pc))) {
+        DEBUG_PRINT("GOSTACK: failed to read sched_pc, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      if (bpf_probe_read_user(&sched_bp, sizeof(sched_bp), (void *)(curg + go_offs->sched_bp))) {
+        DEBUG_PRINT("GOSTACK: failed to read sched_bp, stopping");
+        *stop = true;
+        return ERR_OK;
+      }
+      DEBUG_PRINT(
+        "GOSTACK: recovered saved context: sp=0x%lx, pc=0x%lx, fp=0x%lx",
+        (unsigned long)sched_sp,
+        (unsigned long)sched_pc,
+        (unsigned long)sched_bp);
+      state->sp  = sched_sp;
+      state->pc  = normalize_pac_ptr(sched_pc);
+      state->fp  = sched_bp;
+      // Update r28 (the g register on aarch64) to point to curg so that
+      // subsequent get_m_ptr calls use the correct goroutine pointer.
+      state->r28 = curg;
+      unwinder_mark_nonleaf_frame(state);
+      goto frame_ok;
+    }
     default: return ERR_UNREACHABLE;
     }
   }
