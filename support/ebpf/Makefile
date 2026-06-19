@@ -46,9 +46,13 @@ FLAGS=$(TARGET_FLAGS) -g \
 	-Xclang -fdebug-prefix-map=$(CURDIR)=$(REPRODUCIBLE_PREFIX) \
 	-Xclang -fmacro-prefix-map=$(CURDIR)=$(REPRODUCIBLE_PREFIX)
 
-SRCS := $(wildcard *.ebpf.c)
+COZ_SRCS := coz.ebpf.c
+SRCS := $(filter-out $(COZ_SRCS),$(wildcard *.ebpf.c))
 OBJS := $(SRCS:.c=.$(TARGET_ARCH).o)
 DEPS := $(OBJS:.o=.d)
+COZ_NAME ?= coz.ebpf.$(TARGET_ARCH)
+COZ_OBJS := $(COZ_SRCS:.c=.$(TARGET_ARCH).o)
+COZ_DEPS := $(COZ_OBJS:.o=.d)
 
 .DEFAULT_GOAL := all
 
@@ -74,6 +78,13 @@ $(TRACER_NAME): $(OBJS)
 	$(STRIP) --strip-debug --enable-deterministic-archives $@
 	@./print_instruction_count.sh $@
 
+coz: $(COZ_NAME)
+
+$(COZ_NAME): $(COZ_OBJS)
+	$(BPF_LINK) $^ -o - | $(LLC) -march=bpf -mcpu=v2 -filetype=obj -o $@
+	$(STRIP) --strip-debug --enable-deterministic-archives $@
+	@./print_instruction_count.sh $@
+
 baseline: $(TRACER_NAME)
 	cp $< $(TRACER_NAME).$@
 
@@ -87,6 +98,6 @@ format:
 	$(CLANG_FORMAT) -i -style=file *.[ch]
 
 clean:
-	rm -f *.o *.d
+	rm -f *.o *.d coz.ebpf.amd64 coz.ebpf.arm64
 
--include $(DEPS)
+-include $(DEPS) $(COZ_DEPS)
