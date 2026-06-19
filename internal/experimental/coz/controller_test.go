@@ -113,6 +113,8 @@ func testConfig(t *testing.T) Config {
 		Speedups:       []int{0},
 		WindowDuration: time.Millisecond,
 		Cooldown:       0,
+		Rounds:         1,
+		RotationSeed:   1,
 		MaxThreads:     8,
 		ReportPath:     filepath.Join(t.TempDir(), "report.json"),
 	}
@@ -126,12 +128,12 @@ func TestConfigValidate(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "progress point id")
 }
 
-func TestConfigValidateRejectsMultipleTargets(t *testing.T) {
+func TestConfigValidateAcceptsMultipleTargets(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Targets = append(cfg.Targets, cfg.Targets[0])
-	cfg.Targets[1].ID = 8
-
-	require.ErrorContains(t, cfg.Validate(), "exactly one target")
+	extra := cfg.Targets[0]
+	extra.ID = 8
+	cfg.Targets = append(cfg.Targets, extra)
+	require.NoError(t, cfg.Validate())
 }
 
 func TestControllerRunExperimentWritesReport(t *testing.T) {
@@ -156,10 +158,92 @@ func TestControllerRunExperimentWritesReport(t *testing.T) {
 	require.Equal(t, []int{1234, 1235}, ptracer.attached)
 	require.Equal(t, []int{0}, ptracer.applied)
 	require.Equal(t, 1, ptracer.targetCalls)
+	require.Equal(t, 1, report.RoundsRun)
 
 	data, err := os.ReadFile(cfg.ReportPath)
 	require.NoError(t, err)
 	require.Contains(t, string(data), `"progress"`)
+}
+
+func TestControllerMultiTargetRotationBlockRandomizes(t *testing.T) {
+	cfg := testConfig(t)
+	extra := cfg.Targets[0]
+	extra.ID = 8
+	extra.Name = "hot2"
+	cfg.Targets = append(cfg.Targets, extra)
+	cfg.Speedups = []int{0, 20}
+	cfg.Rounds = 3
+	cfg.RotationSeed = 42
+	cfg.Cooldown = 0
+	cfg.ProgressPoints = []ProbePoint{cfg.ProgressPoints[0]}
+
+	bpf := &fakeBPF{
+		progressSnapshots: nil,
+		targets:           map[uint64]ThreadState{},
+	}
+	totalWindows := len(cfg.Targets) * len(cfg.Speedups) * cfg.Rounds
+	for i := 0; i < 2*totalWindows; i++ {
+		bpf.progressSnapshots = append(bpf.progressSnapshots, map[CounterKey]uint64{})
+	}
+
+	ptracer := &fakePerturbation{}
+	controller, err := NewController(cfg, bpf, ptracer, fakeTIDs{1234})
+	require.NoError(t, err)
+	defer controller.Close()
+
+	report, err := controller.RunExperiment(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 3, report.RoundsRun)
+	require.Len(t, report.Windows, totalWindows)
+	require.Len(t, bpf.active, totalWindows)
+
+	// Every (target, speedup) cell appears exactly cfg.Rounds times.
+	counts := make(map[uint32]int)
+	for _, id := range bpf.active {
+		counts[id]++
+	}
+	require.Len(t, counts, len(cfg.Targets)*len(cfg.Speedups))
+	for _, count := range counts {
+		require.Equal(t, cfg.Rounds, count)
+	}
+
+	// The shuffle should not produce a strictly canonical order for this seed.
+	canonical := true
+	for i := 0; i < totalWindows; i++ {
+		expected := uint32(i%(len(cfg.Targets)*len(cfg.Speedups))) + 1
+		if bpf.active[i] != expected {
+			canonical = false
+			break
+		}
+	}
+	require.False(t, canonical, "rotation should not preserve canonical order")
+}
+
+func TestControllerBudgetStopsAfterCurrentRound(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Speedups = []int{0, 20, 50}
+	cfg.Rounds = 0 // unlimited rounds — only budget bounds the run
+	cfg.Budget = 5 * time.Millisecond
+	cfg.WindowDuration = time.Millisecond
+	cfg.Cooldown = 0
+	cfg.RotationSeed = 1
+
+	bpf := &fakeBPF{targets: map[uint64]ThreadState{}}
+	for i := 0; i < 200; i++ {
+		bpf.progressSnapshots = append(bpf.progressSnapshots, map[CounterKey]uint64{})
+	}
+
+	ptracer := &fakePerturbation{}
+	controller, err := NewController(cfg, bpf, ptracer, fakeTIDs{1234})
+	require.NoError(t, err)
+	defer controller.Close()
+
+	report, err := controller.RunExperiment(context.Background())
+	require.NoError(t, err)
+	// At least one round must have completed (we always finish the current
+	// round), and the final window count is a multiple of the cell pool size.
+	require.GreaterOrEqual(t, report.RoundsRun, 1)
+	require.Equal(t, report.RoundsRun*len(cfg.Speedups), len(report.Windows))
 }
 
 func TestStartRollsBackWhenTIDEnumerationFails(t *testing.T) {

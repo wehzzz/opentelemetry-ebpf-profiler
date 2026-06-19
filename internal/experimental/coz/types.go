@@ -12,16 +12,19 @@ package coz
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"go.opentelemetry.io/ebpf-profiler/tracer"
 )
 
 const (
-	defaultWindowDuration = 10 * time.Second
-	defaultCooldown       = time.Second
-	defaultMaxThreads     = 256
-	defaultReportPath     = "coz-report.json"
+	defaultWindowDuration  = 500 * time.Millisecond
+	defaultCooldown        = 100 * time.Millisecond
+	defaultRounds          = 5
+	defaultMaxThreads      = 256
+	defaultReportPath      = "coz-report.json"
+	defaultMinBaselineProg = 100
 )
 
 var (
@@ -39,6 +42,9 @@ type Config struct {
 	Speedups       []int
 	WindowDuration time.Duration
 	Cooldown       time.Duration
+	Rounds         int
+	Budget         time.Duration
+	RotationSeed   uint64
 	MaxThreads     int
 	ReportPath     string
 	OverheadBudget OverheadBudget
@@ -69,13 +75,19 @@ type OverheadBudget struct {
 // Normalize fills defaults without weakening validation.
 func (c *Config) Normalize() {
 	if len(c.Speedups) == 0 {
-		c.Speedups = []int{0, 5, 10, 20}
+		c.Speedups = []int{0, 5, 10, 20, 100}
 	}
 	if c.WindowDuration == 0 {
 		c.WindowDuration = defaultWindowDuration
 	}
 	if c.Cooldown == 0 {
 		c.Cooldown = defaultCooldown
+	}
+	// Rounds=0 explicitly means "unlimited rounds, bound only by Budget".
+	// Only inject the default when the caller also left Budget unset, so
+	// that `-rounds 0 -budget 60s` works as a wall-clock-bounded run.
+	if c.Rounds == 0 && c.Budget == 0 {
+		c.Rounds = defaultRounds
 	}
 	if c.MaxThreads == 0 {
 		c.MaxThreads = defaultMaxThreads
@@ -96,20 +108,29 @@ func (c Config) Validate() error {
 	if len(c.Targets) == 0 {
 		return errMissingTarget
 	}
-	if len(c.Targets) > 1 {
-		return errors.New("the experimental MVP supports exactly one target")
-	}
 	if c.WindowDuration <= 0 {
 		return fmt.Errorf("window duration must be positive: %s", c.WindowDuration)
 	}
 	if c.Cooldown < 0 {
 		return fmt.Errorf("cooldown must not be negative: %s", c.Cooldown)
 	}
+	if c.Rounds < 0 {
+		return fmt.Errorf("rounds must not be negative: %d", c.Rounds)
+	}
+	if c.Budget < 0 {
+		return fmt.Errorf("budget must not be negative: %s", c.Budget)
+	}
+	if c.Rounds == 0 && c.Budget == 0 {
+		return errors.New("at least one of rounds or budget must be set")
+	}
 	if c.MaxThreads <= 0 {
 		return fmt.Errorf("max threads must be positive: %d", c.MaxThreads)
 	}
 	if c.ReportPath == "" {
 		return errors.New("report path must not be empty")
+	}
+	if len(c.Speedups)*len(c.Targets) >= math.MaxUint32-1 {
+		return errors.New("too many target × speedup cells")
 	}
 	seenPointIDs := make(map[uint32]struct{}, len(c.ProgressPoints))
 	for _, p := range c.ProgressPoints {
@@ -183,4 +204,5 @@ type Window struct {
 	StartedAt    time.Time
 	EndsAt       time.Time
 	ExperimentID uint64
+	TargetIdx    int
 }

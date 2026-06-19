@@ -73,15 +73,20 @@ func throughput(progress map[uint32]uint64, duration time.Duration) map[uint32]f
 	return out
 }
 
-func targetStateFromTID(states map[uint64]ThreadState) TargetState {
+// targetStateForTarget keeps only TIDs currently inside the requested target.
+// Threads inside *other* targets are not considered "active" for the
+// perturbation backend's decisions in this window — their work is irrelevant
+// to the currently-measured cell.
+func targetStateForTarget(states map[uint64]ThreadState, targetID uint32) TargetState {
 	target := TargetState{
 		ActiveTIDs: make(map[int]ThreadState, len(states)),
 	}
 	for pidTID, state := range states {
-		tid := int(uint32(pidTID))
-		if state.Depth > 0 {
-			target.ActiveTIDs[tid] = state
+		if state.Depth == 0 || state.TargetID != targetID {
+			continue
 		}
+		tid := int(uint32(pidTID))
+		target.ActiveTIDs[tid] = state
 	}
 	return target
 }
