@@ -73,12 +73,29 @@ func run() int {
 
 	ctx := context.Background()
 	if len(targets) == 0 && autoTargets > 0 {
-		picked, err := pickTargetsFromSamples(ctx, pid, autoDuration, autoFreqHz, autoTargets, autoFilterRegex)
+		// Build a set of progress symbols so we exclude them from auto-pick.
+		// A progress point sampled as a target produces meaningless slopes
+		// (every thread is "outside" the progress region almost always) and
+		// crowds out a real candidate.
+		progressSymbols := map[string]struct{}{}
+		for _, p := range progress {
+			if probe, err := parseUprobe(p); err == nil {
+				progressSymbols[probe.Symbol] = struct{}{}
+			}
+		}
+		picked, err := pickTargetsFromSamples(ctx, pid, autoDuration, autoFreqHz, autoTargets+len(progressSymbols), autoFilterRegex)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "auto-pick failed: %v\n", err)
 			return 1
 		}
 		for _, hit := range picked {
+			if _, isProgress := progressSymbols[hit.Symbol]; isProgress {
+				fmt.Fprintf(os.Stderr, "auto-pick skip: %s (%s) — declared as progress point\n", hit.Symbol, hit.BinaryPath)
+				continue
+			}
+			if len(targets) >= autoTargets {
+				break
+			}
 			targets = append(targets, fmt.Sprintf("uprobe:%s:%s", hit.BinaryPath, hit.Symbol))
 			fmt.Fprintf(os.Stderr, "auto-pick target: %s (%s, %d samples)\n", hit.Symbol, hit.BinaryPath, hit.Count)
 		}

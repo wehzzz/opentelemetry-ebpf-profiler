@@ -169,6 +169,47 @@ func benches() map[string]benchSpec {
 				return assertLockheavy(ranks)
 			},
 		},
+		"coz_toy": {
+			binary:           "bench_coz_toy",
+			progressSymbol:   "bench_progress",
+			autoFilter:       `^(_dl_|__libc_|__GI_|pthread_|_GLOBAL_|sem_|nanosleep|clock_)`,
+			autoTargets:      3,
+			cpuPin:           "0",
+			requiredBaseline: 50,
+			expectations: func(ranks []targetRanking) []string {
+				// Upstream toy: a() does 2x the work of b() and gates the
+				// join. Expected ranking: bench_a > bench_b.
+				return assertHigher(ranks, "bench_a", "bench_b")
+			},
+		},
+		"coz_pc": {
+			binary:           "bench_coz_pc",
+			progressSymbol:   "bench_progress",
+			autoFilter:       `^(_dl_|__libc_|__GI_|pthread_|_GLOBAL_|sem_|nanosleep|clock_)`,
+			autoTargets:      4,
+			cpuPin:           "0,1",
+			requiredBaseline: 50,
+			expectations: func(ranks []targetRanking) []string {
+				// Upstream producer_consumer: 5 producers feed a 10-slot
+				// queue read by 3 consumers. Producers gate progress when
+				// the queue stays empty. Expected: producer_step > consumer_step.
+				return assertHigher(ranks, "bench_producer_step", "bench_consumer_step")
+			},
+		},
+		"coz_lock": {
+			binary:           "bench_coz_lock",
+			progressSymbol:   "bench_progress",
+			autoFilter:       `^(_dl_|__libc_|__GI_|pthread_|_GLOBAL_|sem_|nanosleep|clock_)`,
+			autoTargets:      3,
+			cpuPin:           "0,1",
+			requiredBaseline: 50,
+			expectations: func(ranks []targetRanking) []string {
+				// Upstream lock_test: critical_work runs under a global
+				// mutex; local_work runs lock-free. Expected: critical_work
+				// has higher slope (it's the scaling bottleneck).
+				return assertHigher(ranks, "bench_critical_work", "bench_local_work")
+			},
+		},
 	}
 }
 
@@ -235,6 +276,36 @@ func assertLockheavy(ranks []targetRanking) []string {
 
 func halfWidth(r *targetRanking) float64 {
 	return (r.SlopeCIHigh - r.SlopeCILow) / 2
+}
+
+// assertHigher checks that target `winner` has a higher slope than `loser`
+// and that the difference exceeds the joint CI noise floor. Used for the
+// generic two-target ranking benches (toy, producer_consumer, lock_test).
+func assertHigher(ranks []targetRanking, winner, loser string) []string {
+	var fails []string
+	w := findRank(ranks, winner)
+	l := findRank(ranks, loser)
+	if w == nil {
+		fails = append(fails, fmt.Sprintf("auto-pick missed %s — target list does not include it", winner))
+		return fails
+	}
+	if l == nil {
+		fails = append(fails, fmt.Sprintf("auto-pick missed %s — target list does not include it", loser))
+		return fails
+	}
+	if w.Status != "ok" {
+		fails = append(fails, fmt.Sprintf("%s status %q (%s) — expected ok", winner, w.Status, w.Detail))
+	}
+	if w.Slope <= l.Slope {
+		fails = append(fails, fmt.Sprintf("expected slope(%s)=%+.5f > slope(%s)=%+.5f",
+			winner, w.Slope, loser, l.Slope))
+	}
+	joint := halfWidth(w) + halfWidth(l)
+	if w.Slope-l.Slope < joint {
+		fails = append(fails, fmt.Sprintf("difference slope(%s)−slope(%s)=%+.5f does not clear noise floor %+.5f",
+			winner, loser, w.Slope-l.Slope, joint))
+	}
+	return fails
 }
 
 func findRank(ranks []targetRanking, name string) *targetRanking {
